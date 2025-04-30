@@ -148,6 +148,18 @@ func (session *JitsiSession) handleMessage(conn *websocket.Conn, msg []byte) {
 }
 
 func main() {
+	doc := etree.NewDocument()
+	doc.ReadFromFile("jingle-incoming.xml")
+	jingle := doc.FindElement("iq/jingle")
+
+	sdp := SDP{
+		IsP2P: true,
+	}
+
+	sdp.FromJingle(jingle)
+
+	os.Exit(0)
+
 	session := JitsiSession{
 		host: "jitsi.hotmilk.space",
 		room: "maki",
