@@ -1,4 +1,4 @@
-package main
+package sdp
 
 import (
 	"fmt"
@@ -299,7 +299,6 @@ func (this *SDP) Jingle2Media(content *etree.Element) string {
 	// is expected to be in the first m-line.
 	sdp += nonUserSources + userSources
 
-	fmt.Println("SDP:\n" + sdp)
 	return sdp
 }
 
