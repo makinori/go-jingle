@@ -139,6 +139,8 @@ func (session *JitsiSession) handleMessage(conn *websocket.Conn, msg []byte) {
 			fmt.Println("\n\n\nSDP:\n")
 			fmt.Println(sdp.Raw)
 
+			initWebRTC(sdp)
+
 			// TODO: continue from here
 		}
 
