@@ -2,14 +2,21 @@ package sdp
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/beevik/etree"
+	"github.com/jinzhu/copier"
+	"github.com/makinori/go-jitsi/util"
+	"github.com/pion/sdp/v3"
 )
 
+// rewritten from
 // https://github.com/jitsi/lib-jitsi-meet/blob/master/modules/sdp/SDP.js
-// to convert between jingle and regular sdp
+
+// used for converting between jingle sdp and regular sdp
+// not fully tested and may be broken here and there
 
 const (
 	XEP_BUNDLE_MEDIA          = "urn:xmpp:jingle:apps:grouping:0"
@@ -36,6 +43,22 @@ type SDP struct {
 	RemoveUdpCandidates bool
 
 	FailICE bool
+
+	Media []string
+}
+
+func NewSDP(sdp string, isP2P bool) SDP {
+	var this SDP
+
+	this.updateSessionAndMediaSections(sdp)
+	this.IsP2P = isP2P
+	this.Raw = this.Session + strings.Join(this.Media, "")
+
+	this.FailICE = false
+	this.RemoveTcpCandidates = false
+	this.RemoveUdpCandidates = false
+
+	return this
 }
 
 func adjustMsidSemantic(msid string, mediaType string, idx string) string {
@@ -50,6 +73,28 @@ func adjustMsidSemantic(msid string, mediaType string, idx string) string {
 	}
 
 	return fmt.Sprintf("%s %s-%s", msid, msid, idx)
+}
+
+func (this *SDP) updateSessionAndMediaSections(sdp string) {
+	var media []string
+	if sdp == "" {
+		media = strings.Split(this.Raw, "\r\nm=")
+	} else {
+		media = strings.Split(sdp, "\r\nm=")
+	}
+
+	length := len(media)
+
+	for i := 1; i < length; i++ {
+		mediaI := "m=" + media[i]
+		if i != length-1 {
+			mediaI += "\r\n"
+		}
+		media[i] = mediaI
+	}
+
+	this.Session = media[0] + "\r\n"
+	this.Media = media[1:]
 }
 
 func (this *SDP) FromJingle(jingle *etree.Element) {
@@ -94,11 +139,112 @@ func (this *SDP) FromJingle(jingle *etree.Element) {
 	for _, content := range jingle.FindElements("content") {
 		m := this.Jingle2Media(content)
 
-		// TODO: line 221
-
-		fmt.Println(m)
+		this.Media = append(this.Media, m)
 	}
 
+	this.Raw = this.Session + strings.Join(this.Media, "")
+
+	if this.IsP2P {
+		return
+	}
+
+	// For offers from Jicofo, a new m-line needs to be created for each new
+	// remote source that is added to the conference.
+
+	var newSession sdp.SessionDescription
+	err := newSession.UnmarshalString(this.Raw)
+	if err != nil {
+		panic("failed to parse sdp: " + err.Error())
+	}
+
+	var newMedia []*sdp.MediaDescription
+
+	for _, mLine := range newSession.MediaDescriptions {
+		mType := mLine.MediaName.Media
+
+		var mLineSsrcs []*sdp.Attribute
+		for _, attr := range mLine.Attributes {
+			if attr.Key == "ssrc" {
+				mLineSsrcs = append(mLineSsrcs, &attr)
+			}
+		}
+
+		if mType == "application" || len(mLineSsrcs) == 0 {
+			var newMline *sdp.MediaDescription = &sdp.MediaDescription{}
+			err := copier.Copy(newMline, mLine)
+			if err != nil {
+				panic("failed to deep copy: " + err.Error())
+			}
+
+			for i, attr := range newMline.Attributes {
+				if attr.Key == "mid" {
+					newMline.Attributes[i].Value = strconv.Itoa(len(newMedia))
+					break
+				}
+			}
+			newMedia = append(newMedia, newMline)
+
+			continue
+		}
+
+		panic("handle ssrcs")
+		// for idx, ssrc := range mLineSsrcs {
+		// }
+	}
+
+	newSession.MediaDescriptions = newMedia
+
+	var mids []string
+	for _, mLine := range newMedia {
+		for _, attr := range mLine.Attributes {
+			if attr.Key == "mid" {
+				mids = append(mids, attr.Value)
+			}
+		}
+	}
+
+	if len(groups) > 0 {
+		// We regenerate the BUNDLE group (since we regenerated the mids)
+
+		var newAttributes = util.FilterArray(
+			newSession.Attributes, func(attr sdp.Attribute) bool {
+				return attr.Key != "group"
+			},
+		)
+
+		newAttributes = append(newAttributes, sdp.Attribute{
+			Key:   "group",
+			Value: "BUNDLE " + strings.Join(mids, " "),
+		})
+
+		newSession.Attributes = newAttributes
+	}
+
+	var newAttributes = util.FilterArray(
+		newSession.Attributes, func(attr sdp.Attribute) bool {
+			return attr.Key != "msid-semantic"
+		},
+	)
+
+	// msid semantic
+
+	newAttributes = append(newAttributes, sdp.Attribute{
+		Key:   "msid-semantic",
+		Value: " WMS *",
+	})
+
+	newSession.Attributes = newAttributes
+
+	// Increment the session version every time.
+	newSession.Origin.SessionVersion++
+
+	newSessionBytes, err := newSession.Marshal()
+	if err != nil {
+		panic("failed to marshal sdp: " + err.Error())
+	}
+
+	this.Raw = string(newSessionBytes)
+	this.updateSessionAndMediaSections("")
 }
 
 // Converts the content section from Jingle to a media section that can be appended to the SDP.
@@ -227,10 +373,10 @@ func (this *SDP) Jingle2Media(content *etree.Element) string {
 			sdp += strings.Join(paramatersLine, ";") + "\r\n"
 		}
 
-		sdp += RtcpFbFromJingle(payloadType, payloadType.SelectAttrValue("id", ""))
+		sdp += rtcpFbFromJingle(payloadType, payloadType.SelectAttrValue("id", ""))
 	}
 
-	sdp += RtcpFbFromJingle(desc, "*")
+	sdp += rtcpFbFromJingle(desc, "*")
 
 	hdrExts := desc.FindElements(`rtp-hdrext[@xmlns="` + XEP_RTP_HEADER_EXTENSIONS + `"]`)
 	for _, hdrExt := range hdrExts {
@@ -302,7 +448,7 @@ func (this *SDP) Jingle2Media(content *etree.Element) string {
 	return sdp
 }
 
-func RtcpFbFromJingle(elem *etree.Element, payloadType string) string {
+func rtcpFbFromJingle(elem *etree.Element, payloadType string) string {
 	var sdp string
 
 	feedbackElementTrrInt := elem.FindElement(

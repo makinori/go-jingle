@@ -130,11 +130,16 @@ func (session *JitsiSession) handleMessage(conn *websocket.Conn, msg []byte) {
 
 			init.DidJingleInitiate = true
 
-			doc.IndentTabs()
-			doc.WriteToFile("jingle-incoming.xml")
+			// doc.IndentTabs()
+			// doc.WriteToFile("jingle-incoming.xml")
+
+			sdp := sdp.NewSDP("", false)
+			sdp.FromJingle(jingle)
+
+			fmt.Println("\n\n\nSDP:\n")
+			fmt.Println(sdp.Raw)
 
 			// TODO: continue from here
-
 		}
 
 	case tag == "enabled" && xmlns == "urn:xmpp:sm:3":
@@ -149,17 +154,14 @@ func (session *JitsiSession) handleMessage(conn *websocket.Conn, msg []byte) {
 }
 
 func (session *JitsiSession) StartSession() {
-	doc := etree.NewDocument()
-	doc.ReadFromFile("jingle-incoming.xml")
-	jingle := doc.FindElement("iq/jingle")
+	// doc := etree.NewDocument()
+	// doc.ReadFromFile("jingle-incoming.xml")
+	// jingle := doc.FindElement("iq/jingle")
 
-	sdp := sdp.SDP{
-		IsP2P: false,
-	}
+	// sdp := sdp.NewSDP("", false)
+	// sdp.FromJingle(jingle)
 
-	sdp.FromJingle(jingle)
-
-	os.Exit(0)
+	// os.Exit(0)
 
 	interrupt := make(chan os.Signal, 1)
 	signal.Notify(interrupt, os.Interrupt)
